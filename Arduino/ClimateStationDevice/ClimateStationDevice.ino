@@ -4,18 +4,28 @@
 *********/
 
 // Import required libraries
+#include <Adafruit_Sensor.h>
 #include <Arduino.h>
+#include <DHT.h>
 #include <ESP8266WiFi.h>
-#include <Hash.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <Adafruit_Sensor.h>
-#include <DHT.h>
+#include <Hash.h>
+#include <WiFiClientSecure.h>
+#include <string.h> 
 
 // Replace with your network credentials
 const char* ssid = "THE SOCKS ATTACK";
 const char* password = "sockattack";
 const char* apiSecret = "1e98f6ebb39e0720c4e95af7b436502f53d85f2becf8b5d96e1e62083890fbfab5a4fa05d8bbaa212b8d6cdc3aa10953d7a2d68958d1238ca57f54ff";
+
+const char* host = "us-central1-climate-station.cloudfunctions.net";
+const char* deviceVersion = "ClimateStation-2016-06-06";
+const int httpsPort = 443;
+
+// Use web browser to view and copy
+// SHA1 fingerprint of the certificate
+const char fingerprint[] PROGMEM = "6D A7 25 5D 9F AD 12 7E DF 5A 9B 00 A0 8A 3C 9F 8D 7F BD DF";
 
 #define S1_DHTPIN 14  // Digital pin connected to the DHT sensor
 #define S2_DHTPIN 12  // Digital pin connected to the DHT sensor
@@ -29,6 +39,9 @@ DHT dht1(S1_DHTPIN, DHTTYPE);
 DHT dht2(S2_DHTPIN, DHTTYPE);
 
 void getMeasurements();
+void registerStartup();
+void postRequest(String url, char* payload);
+void reportMeasurement(String sensorId, String measurementType, float measurement);
 
 // current temperature & humidity, updated in loop()
 float t1 = 0.0;
@@ -39,12 +52,18 @@ float h2 = 0.0;
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 
+//secure http client
+  WiFiClientSecure client;
+
 // Generally, you should use "unsigned long" for variables that hold time
 // The value will quickly become too large for an int to store
 unsigned long previousMillis = 0;    // will store last time DHT was updated
 
 // Updates DHT readings every 10 seconds
 const long interval = 10000;  
+
+unsigned long previousReport = 0;    // will store last time measurements were reported
+const long reportInterval = 30000; 
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
@@ -161,6 +180,10 @@ void setup(){
     Serial.println(".");
   }
 
+  //secure client
+  Serial.printf("Using fingerprint '%s'\n", fingerprint);
+  client.setFingerprint(fingerprint);
+
   // Print ESP8266 Local IP Address
   Serial.println(WiFi.localIP());
   Serial.println(apiSecret);
@@ -203,6 +226,8 @@ void setup(){
     }
   });
 
+  registerStartup();
+
   // Start server
   server.begin();
 }
@@ -217,7 +242,14 @@ void loop(){
 }
 
 void getMeasurements(){
-      // Read temperature as Celsius (the default)
+    unsigned long currentMillis = millis();
+    
+    bool shouldReport = currentMillis - previousReport >= reportInterval;
+    if (shouldReport) {
+      previousReport = currentMillis;
+    }
+    
+    // Read temperature as Celsius (the default)
     float newT1 = dht1.readTemperature();
     // Read temperature as Fahrenheit (isFahrenheit = true)
     //float newT = dht.readTemperature(true);
@@ -228,6 +260,9 @@ void getMeasurements(){
     else {
       t1 = newT1;
       Serial.println("Sensor 1 temperature " + String(t1) + "c");
+      if (shouldReport) {
+        reportMeasurement("1", "temperature", t1);
+      }
     }
 
     // Read Humidity
@@ -239,6 +274,9 @@ void getMeasurements(){
     else {
       h1 = newH1;
       Serial.println("Sensor 1 humidity " + String(h1) + "%");
+      if (shouldReport) {
+        reportMeasurement("1", "humidity", h1);
+      }
     }
 
      float newT2 = dht2.readTemperature();
@@ -248,6 +286,9 @@ void getMeasurements(){
     else {
       t2 = newT2;
       Serial.println("Sensor 2 temperature " + String(t2) + "c");
+      if (shouldReport) {
+        reportMeasurement("2", "temperature", t2);
+      }
     }
     
     float newH2 = dht2.readHumidity();
@@ -258,5 +299,76 @@ void getMeasurements(){
     else {
       h2 = newH2;
       Serial.println("Sensor 2 humidity " + String(h2) + "%");
+      if (shouldReport) {
+        reportMeasurement("2", "humidity", h2);
+      }
     }
+}
+
+void registerStartup() {
+  String url = "/register";
+  
+  char content[200];
+  strcpy(content, "{\"apiSecret\":\"");
+  strcat(content, apiSecret);
+  strcat(content, "\", \"localIpAddress\": \"");
+  strcat(content, WiFi.localIP().toString().c_str());
+  strcat(content, "\"}");
+
+  postRequest(url, content);
+ 
+}
+
+void reportMeasurement(String sensorId, String measurementType, float measurement) {
+  String url = "/measurement";
+  
+    char mString[6]; 
+    gcvt(measurement, 4, mString);
+  
+  char content[500];
+  strcpy(content, "{\"apiSecret\":\"");
+  strcat(content, apiSecret);
+  strcat(content, "\", \"localIpAddress\": \"");
+  strcat(content, WiFi.localIP().toString().c_str());
+  strcat(content, "\", \"sensorId\": \"");
+  strcat(content, sensorId.c_str());
+  strcat(content, "\", \"measurementType\": \"");
+  strcat(content, measurementType.c_str());
+  strcat(content, "\", \"measurement\": ");
+  strcat(content, mString);
+  strcat(content, "}");
+
+  postRequest(url, content);
+}
+
+void postRequest(String url, char* content) {
+       // Use WiFiClientSecure class to create TLS connection
+
+  if (!client.connect(host, httpsPort)) {
+    Serial.println("connection failed");
+    return;
+  }
+
+
+  int contentLength = strlen(content);
+
+  client.print("POST " + url + " HTTP/1.1\r\n" +
+               "Host: " + host + "\r\n" +
+               "User-Agent: " + deviceVersion + "\r\n" + 
+               "Connection: close\r\n" + 
+               "Accept: */*\r\n" +
+               "Content-Type: application/json\r\n" + 
+               "Content-Length: " + String(contentLength) + "\r\n" + 
+               "\r\n" +
+               content +
+               "\r\n");
+
+  while (client.connected()) {
+    String line = client.readStringUntil('\n');
+    if (line == "\r") {
+      break;
+    }
+  }
+  String line = client.readStringUntil('\n');
+  Serial.println(line);
 }

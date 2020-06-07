@@ -1,0 +1,1 @@
+module github.com/jamespercy/ClimateStation/register
