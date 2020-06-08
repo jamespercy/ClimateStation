@@ -35,10 +35,25 @@ const char fingerprint[] PROGMEM = "6D A7 25 5D 9F AD 12 7E DF 5A 9B 00 A0 8A 3C
 #define DHTTYPE    DHT22     // DHT 22 (AM2302)
 //#define DHTTYPE    DHT21     // DHT 21 (AM2301)
 
+//Fan controll definitions
+
+#define FanIA 5 //fan conrol input A blue
+#define FanIB 4 //fan conrol input B yellow
+
+#define Fan_PWM FanIA //fan PWM speed
+#define Fan_DIR FanIB //fan direction
+// the actual values for "fast" and "slow" depend on the motor
+#define PWM_SLOW 50 // arbitrary slow speed PWM duty cycle
+#define PWM_FAST 200 // arbitrary fast speed PWM duty cycle
+#define PWM_FULL 255 // 255 is the new over 9000
+
 DHT dht1(S1_DHTPIN, DHTTYPE);
 DHT dht2(S2_DHTPIN, DHTTYPE);
 
 void getMeasurements();
+void setupFan();
+void stopFan();
+void fanSpeed(int speed);
 void registerStartup();
 void postRequest(String url, char* payload);
 void reportMeasurement(String sensorId, String measurementType, float measurement);
@@ -48,6 +63,8 @@ float t1 = 0.0;
 float t2 = 0.0;
 float h1 = 0.0;
 float h2 = 0.0;
+
+int currentFanSpeed = 0;
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -63,12 +80,13 @@ unsigned long previousMillis = 0;    // will store last time DHT was updated
 const long interval = 10000;  
 
 unsigned long previousReport = 0;    // will store last time measurements were reported
-const long reportInterval = 30000; 
+const long reportInterval = 60000; 
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="favicon.ico" rel="icon" type="image/x-icon" />
   <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
   <style>
     html {
@@ -143,11 +161,10 @@ let getHumidity = (sensor) => {
   xhttp.send();
 }
 
-setInterval(getTemperature("1"), 10000 ) ;
-setInterval(getTemperature("2"), 10000 ) ;
-setInterval(getHumidity("1"), 10000 ) ;
-setInterval(getHumidity("2"), 10000 ) ;
-
+setInterval(getTemperature, 10000, '1' ) ;
+setInterval(getTemperature, 10000, '2' ) ;
+setInterval(getHumidity, 10000, '1' ) ;
+setInterval(getHumidity, 10000, '2' ) ;
 </script>
 </html>)rawliteral";
 
@@ -171,6 +188,8 @@ void setup(){
   Serial.begin(115200);
   dht1.begin();
   dht2.begin();
+
+  setupFan();
   
   // Connect to Wi-Fi
   WiFi.begin(ssid, password);
@@ -226,6 +245,10 @@ void setup(){
     }
   });
 
+  server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/favicon.ico", "image/png");
+  });
+
   registerStartup();
 
   // Start server
@@ -273,6 +296,11 @@ void getMeasurements(){
     }
     else {
       h1 = newH1;
+      if (h1 > 90) {
+        fanSpeed(PWM_FULL);
+      } else if (h1 < 80) {
+        stopFan();
+      }
       Serial.println("Sensor 1 humidity " + String(h1) + "%");
       if (shouldReport) {
         reportMeasurement("1", "humidity", h1);
@@ -302,6 +330,10 @@ void getMeasurements(){
       if (shouldReport) {
         reportMeasurement("2", "humidity", h2);
       }
+    }
+
+    if (shouldReport) {
+      reportMeasurement("fan", "speed", currentFanSpeed);
     }
 }
 
@@ -371,4 +403,27 @@ void postRequest(String url, char* content) {
   }
   String line = client.readStringUntil('\n');
   Serial.println(line);
+}
+
+void setupFan() {
+  pinMode( Fan_PWM, OUTPUT );
+  pinMode( Fan_DIR, OUTPUT );
+  stopFan();
+}
+
+void stopFan()
+{
+  currentFanSpeed = 0;
+  Serial.println("Stopping fan");
+  digitalWrite( Fan_PWM, LOW );
+  digitalWrite( Fan_DIR, LOW );
+}
+
+void fanSpeed(int speed)
+{
+  Serial.println("Setting fan speed " + String(speed));
+  currentFanSpeed = speed;
+  // set the motor speed and direction
+  digitalWrite( Fan_DIR, HIGH );
+  analogWrite( Fan_PWM, 255-speed ); // PWM speed = fast   
 }
