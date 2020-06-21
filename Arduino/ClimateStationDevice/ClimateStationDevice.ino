@@ -8,7 +8,7 @@
 #include <DHT.h>
 #include <EEPROM.h>
 #include <ESP8266WiFi.h>
-#include <ESPAsyncTCP.h>
+#include <ESPAsyncTCP.h>he
 #include <ESPAsyncWebServer.h>
 #include <Hash.h>
 #include <WiFiClientSecure.h>
@@ -45,15 +45,28 @@ const unsigned int DEFAULT_MIN_TEMP = 20; //getting chilly
 
 const unsigned int TEMP_MAX_LOCATION = 0;
 const unsigned int TEMP_MIN_LOCATION = 1;
+const unsigned int HEATING_ACTIVE_LOCATION = 4;
+
 const unsigned int HUM_MAX_LOCATION = 2;
 const unsigned int HUM_MIN_LOCATION = 3;
+const unsigned int FAN_ACTIVE_LOCATION = 5;
+
 const char* HEATING_ON_COLOUR = "#ffb300";
-const char* HEATING_OFF_COLOUR = "#5b8080";
+const char* HEATING_OFF_COLOUR = "#000000";
+const char* HEATING_INACTIVE_COLOUR = "#5b8080";
+
 const char* FAN_ON_COLOUR = "#d0c9f5";
-const char* FAN_OFF_COLOUR = "#5b8080";
+const char* FAN_OFF_COLOUR = "#000000";
+const char* FAN_INACTIVE_COLOUR = "#5b8080";
 
 int unsigned currentFanSpeed = 0;
+bool fanIsActive = true;
+
 bool heating = false;
+bool heatingIsActive = true;
+
+// relay
+#define RELAY_PIN 13  // Digital pin connected to the DHT sensor
 
 //DHT sensors
 #define S1_DHTPIN 14  // Digital pin connected to the DHT sensor
@@ -77,14 +90,20 @@ void registerStartup();
 void postRequest(String url, char* payload);
 void reportMeasurement(String sensorId, String measurementType, float measurement);
 void(* resetFunc) (void) = 0;
+
 int getMinTemp();
 int getMaxTemp();
-int getMinHum();
-int getMaxHum();
+bool isHeatActive();
 void setMinTemp(int minTemp);
 void setMaxTemp(int maxTemp);
+void setHeatActive(bool heaterOn);
+
+int getMinHum();
+int getMaxHum();
+bool isFanActive();
 void setMinHum(int minHum);
 void setMaxHum(int maxHum);
+void setFanActive(bool fanOn);
 
 // current temperature & humidity, updated in loop()
 float t1 = 0.0;
@@ -118,7 +137,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   <link href="favicon.ico" rel="icon" type="image/x-icon" />
   <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
   <style>
-    html {
+   html {
      font-family: Arial;
      display: inline-block;
      margin: 0px auto;
@@ -126,20 +145,58 @@ const char index_html[] PROGMEM = R"rawliteral(
     }
     h2 { font-size: 3.0rem; }
     p { font-size: 3.0rem; }
+    i { font-size: 3.0rem; }
     .units { font-size: 1.2rem; }
     .labels{
       font-size: 1.5rem;
       vertical-align:middle;
       padding-bottom: 15px;
     }
+    small { font-size: 0.6rem; }
+    .grid-container {
+        display: grid;
+        grid-template-columns: auto 60px 60px 60px 60px auto;
+      }
+      .temp-range {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+      }
+     .heat {
+        grid-column: 3;
+        grid-row: 1 / span 1;
+      }
+     .fan {
+        grid-column: 4;
+        grid-row: 1 / span 1;
+      }
+      .hum-range {
+        grid-column: 5;
+        grid-row: 1 / span 2;
+      }
+      
+      .cenger-me {
+        margin: auto;
+      }
   </style>
 </head>
 <body>
-<p>
-  <span><i id="heating" class="fas fa-fire-alt" style="color:%HEATING_COLOUR%;"></i></span>
-  <span><i id="fan" class="fas fa-wind" style="color:%FAN_COLOUR%;"></i></span>
-</p>
   <h3>Sensor 1</h3>
+  <p>
+    <div class="center-me">
+      <div class="grid-container" >
+        <div class="temp-range">
+          <div><span id="minTempRange">%MIN_TEMP%</span>&deg;c</div>
+          <div><span id="maxTempRange">%MAX_TEMP%</span>&deg;c</div>
+        </div>
+        <i id="heating" class="fas fa-fire-alt heat" style="color:%HEATING_COLOUR%;"></i>
+        <i id="fan" class="fas fa-wind fan" style="color:%FAN_COLOUR%;"></i>
+        <div class="hum-range">
+          <div><span id="minHumRange">%MIN_HUM%</span>&#37;</div>
+          <div><span id="maxHumRange">%MAX_HUM%</span>&#37;</div>
+        </div>
+      </div>
+    </div>
+  </p>
   <p>
       <span>
     <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
@@ -184,6 +241,16 @@ const char index_html[] PROGMEM = R"rawliteral(
   </p>
 </body>
 <script>
+
+document.getElementById('heating').addEventListener('click', function (event) {
+  event.preventDefault();
+  fetch('/toggle?heater=true);
+}, false);
+
+document.getElementById('fan').addEventListener('click', function (event) {
+  event.preventDefault();
+  fetch('/toggle?fan=true);
+}, false);
   
 document.getElementById('settings').addEventListener('click', function (event) {
   event.preventDefault();
@@ -197,8 +264,17 @@ document.getElementById('update').addEventListener('click', function (event) {
   let maxTemp = document.getElementById('maxTemp').value;
   let minHum = document.getElementById('minHum').value;
   let maxHum = document.getElementById('maxHum').value;
-  fetch(`/update-settings?minTemp=${minTemp}&maxTemp=${maxTemp}&minHum=${minHum}&maxHum=${maxHum}`);
+  fetch(`/update-settings?minTemp=${minTemp}&maxTemp=${maxTemp}&minHum=${minHum}&maxHum=${maxHum}`).then((response) => {
+    if (response.status == 200) {
+       document.getElementById('minTempRange').textContent = minTemp;
+       document.getElementById('maxTempRange').textContent = maxTemp;
+       document.getElementById('minHumRange').textContent = minHum;
+       document.getElementById('maxHumRange').textContent = maxHum;
+    }
+   });
 
+
+  
   document.getElementById('settings').style.display = '';
   document.getElementById('settings-form').style.display = 'none';
 
@@ -503,6 +579,9 @@ void setupFan() {
   } else {
     Serial.println("Humidity min read at " + String(HUM_MIN_LOCATION) + " is " + String(minHum));
   }
+
+  fanIsActive = isFanActive();
+  Serial.println("Fan is active " + String(fanIsActive));
   
   pinMode( Fan_PWM, OUTPUT );
   pinMode( Fan_DIR, OUTPUT );
@@ -511,6 +590,9 @@ void setupFan() {
 
 
 void setupHeating() {
+    //relay
+    pinMode(RELAY_PIN, OUTPUT);
+  
     //ensure heating paramewters are set
   int maxTemp = getMaxTemp();
   if (maxTemp == 255|| maxTemp == 0) {
@@ -527,6 +609,9 @@ void setupHeating() {
   } else {
     Serial.println("Temp min read at " + String(TEMP_MIN_LOCATION) + " is " + String(minTemp));
   }
+
+  heatingIsActive = isHeatActive();
+  Serial.println("Heating is active " + String(heatingIsActive));
   
 }
 
@@ -549,20 +634,28 @@ void fanSpeed(int speed)
 
 void heaterOn(bool shouldTurnOn)
 {
+  heating = shouldTurnOn;
+  
   if (shouldTurnOn) {
     Serial.println("Turning heater ON");
-    heating = shouldTurnOn;
+     digitalWrite(RELAY_PIN, HIGH);
   } else {
     Serial.println("Turning heater OFF");
-    heating = shouldTurnOn;
+     digitalWrite(RELAY_PIN, LOW);
   }
 }
 
 String heatColour() {
+    if (!heatingIsActive) {
+    return HEATING_INACTIVE_COLOUR;
+  }
   return heating ? HEATING_ON_COLOUR : HEATING_OFF_COLOUR ;
 }
 
 String fanColour() {
+  if (!fanIsActive) {
+    return FAN_INACTIVE_COLOUR;
+  }
   return currentFanSpeed > 0 ? FAN_ON_COLOUR : FAN_OFF_COLOUR;
 }
 
@@ -580,6 +673,14 @@ int getMinHum() {
 
 int getMaxHum() {
   return EEPROM.read(HUM_MAX_LOCATION);
+}
+
+bool isFanActive() {
+  return EEPROM.read(FAN_ACTIVE_LOCATION) == 1;
+}
+
+bool isHeatActive() {
+  return EEPROM.read(HEATING_ACTIVE_LOCATION) == 1;
 }
 
 void setMinTemp(int minTemp) {
@@ -619,6 +720,18 @@ void setMaxHum(int maxHum) {
   }
     Serial.println("Setting max humidity as " + String(maxHum));
   EEPROM.write(HUM_MAX_LOCATION, maxHum);
+  EEPROM.commit();
+}
+
+void setHeatActive(bool heatingActive) {
+  Serial.println("Setting heating active as " + String(heatingActive));
+  EEPROM.write(HEATING_ACTIVE_LOCATION, heatingActive ? 1: 0);
+  EEPROM.commit();
+}
+
+void setFanActive(bool fanActive) {
+  Serial.println("Setting fan active as " + String(fanActive));
+  EEPROM.write(FAN_ACTIVE_LOCATION, fanActive ? 1: 0);
   EEPROM.commit();
 }
 
@@ -684,6 +797,20 @@ void setupWebServer() {
     strcat(envData, "|");
     strcat(envData, fanColour().c_str());
     request->send_P(200, "text/plain", envData);
+  });
+
+  
+  server.on("/toggle", HTTP_GET, [](AsyncWebServerRequest *request){
+    if(request->hasParam("heater")) {
+      heatingIsActive = !heatingIsActive;
+      setHeatActive(heatingIsActive);
+    }
+    
+    if(request->hasParam("fan")) {
+      fanIsActive = !fanIsActive;
+      setFanActive(fanIsActive);
+    }
+    request->send_P(200, "text/plain", String("OK").c_str());
   });
 
   server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
