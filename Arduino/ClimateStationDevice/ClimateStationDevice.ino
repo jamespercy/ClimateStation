@@ -62,7 +62,7 @@ const char* FAN_INACTIVE_COLOUR = "#5b8080";
 int unsigned currentFanSpeed = 0;
 bool fanIsActive = true;
 
-bool heating = false;
+bool heaterIsHeating = false;
 bool heatingIsActive = true;
 
 // relay
@@ -144,11 +144,11 @@ const char index_html[] PROGMEM = R"rawliteral(
      text-align: center;
     }
     h2 { font-size: 3.0rem; }
-    p { font-size: 3.0rem; }
-    i { font-size: 3.0rem; }
+    p { font-size: 2.8rem; }
+    i { font-size: 2.8rem; }
     .units { font-size: 1.2rem; }
     .labels{
-      font-size: 1.5rem;
+      font-size: 1.0rem;
       vertical-align:middle;
       padding-bottom: 15px;
     }
@@ -162,10 +162,12 @@ const char index_html[] PROGMEM = R"rawliteral(
         grid-row: 1 / span 2;
       }
      .heat {
+        cursor: pointer;
         grid-column: 3;
         grid-row: 1 / span 1;
       }
      .fan {
+        cursor: pointer;
         grid-column: 4;
         grid-row: 1 / span 1;
       }
@@ -174,13 +176,23 @@ const char index_html[] PROGMEM = R"rawliteral(
         grid-row: 1 / span 2;
       }
       
-      .cenger-me {
-        margin: auto;
+      .internal {
+        border-radius: 25px;
+        border: 2px solid #988df7;
+      }
+      .external {
+        border-radius: 25px;
+        border: 2px dashed #32a852;
+      }
+      .settings {
+        border-radius: 25px;
+        border: 2px solid #000000;
       }
   </style>
 </head>
 <body>
-  <h3>Sensor 1</h3>
+  <div class="internal">
+  <h3>Internal (S1)</h3>
   <p>
     <div class="center-me">
       <div class="grid-container" >
@@ -209,7 +221,9 @@ const char index_html[] PROGMEM = R"rawliteral(
       <sup class="units">&#37;</sup>
     </span>
   </p>
-    <h3>Sensor 2</h3>
+  </div>
+  <div class="external">
+    <h3>External (S2)</h3>
   <p>
       <span>
     <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
@@ -222,34 +236,37 @@ const char index_html[] PROGMEM = R"rawliteral(
     <sup class="units">&#37;</sup>
     </span>
   </p>
-  <p>
-  <i id="settings" class="fas fa-cogs" style="color:#5b8080;"></i>
-    <form id="settings-form" style="display:none">
-    <div style="border: 1px dashed green;">
-      <label for="minTemp">Min temperature:</label><br>
-      <input type="number" id="minTemp" name="minTemp" value="%MIN_TEMP%" oninput="this.value = Math.abs(Math.round(this.value));" min="15" max="30"  size="10"><br>
-      <label for="maxTemp">Max temperature:</label><br>
-      <input type="number" id="maxTemp" name="maxTemp" value="%MAX_TEMP%" oninput="this.value = Math.abs(Math.round(this.value));" min="15" max="30"  size="10"><br>
-      <label for="minHum">Min humidity:</label><br>
-      <input type="number" id="minHum" name="minHum" value="%MIN_HUM%" oninput="this.value = Math.abs(Math.round(this.value));" min="50" max="99"  size="10"><br>
-      <label for="maxHum">Max humidity:</label><br>
-      <input type="number" id="maxHum" name="maxHum" value="%MAX_HUM%" oninput="this.value = Math.abs(Math.round(this.value));" min="50" max="99"  size="10"><br>
-      <br>
-      <button id="update">Update</button><button id="cancel">Cancel</button>
-      </div>
-    </form>
-  </p>
+  </div>
+  <div class="settings">
+    <p>
+    <i id="settings" class="fas fa-cogs" style="color:#5b8080;"></i>
+      <form id="settings-form" style="display:none">
+      <div style="border: 1px dashed green;">
+        <label for="minTemp">Min temperature:</label><br>
+        <input type="number" id="minTemp" name="minTemp" value="%MIN_TEMP%" oninput="this.value = Math.abs(Math.round(this.value));" min="15" max="30"  size="10"><br>
+        <label for="maxTemp">Max temperature:</label><br>
+        <input type="number" id="maxTemp" name="maxTemp" value="%MAX_TEMP%" oninput="this.value = Math.abs(Math.round(this.value));" min="15" max="30"  size="10"><br>
+        <label for="minHum">Min humidity:</label><br>
+        <input type="number" id="minHum" name="minHum" value="%MIN_HUM%" oninput="this.value = Math.abs(Math.round(this.value));" min="50" max="99"  size="10"><br>
+        <label for="maxHum">Max humidity:</label><br>
+        <input type="number" id="maxHum" name="maxHum" value="%MAX_HUM%" oninput="this.value = Math.abs(Math.round(this.value));" min="50" max="99"  size="10"><br>
+        <br>
+        <button id="update">Update</button><button id="cancel">Cancel</button>
+        </div>
+      </form>
+    </p>
+  </div>
 </body>
 <script>
 
 document.getElementById('heating').addEventListener('click', function (event) {
   event.preventDefault();
-  fetch('/toggle?heater=true);
+  fetch('/toggle?heater=true');
 }, false);
 
 document.getElementById('fan').addEventListener('click', function (event) {
   event.preventDefault();
-  fetch('/toggle?fan=true);
+  fetch('/toggle?fan=true');
 }, false);
   
 document.getElementById('settings').addEventListener('click', function (event) {
@@ -429,9 +446,11 @@ void getMeasurements(){
       int minTemp = getMinTemp();
       
       Serial.println("Checking temp is between " + String(minTemp) + "c and " + String(maxTemp) + "c");
-      if (t1 >= maxTemp && heating) {
+      if (!heatingIsActive) {
         heaterOn(false);
-      } else if (t1 <= minTemp && !heating) {
+      } else if (t1 >= maxTemp) {
+        heaterOn(false);
+      } else if (t1 <= minTemp) {
         heaterOn(true);
       }
       
@@ -453,7 +472,10 @@ void getMeasurements(){
       int minHum = getMinHum();
       
       Serial.println("Checking humidity is between " + String(minHum) + "% and " + String(maxHum) + "%");
-      if (h1 >= maxHum) {
+
+      if (!fanIsActive) {
+        stopFan();
+      } else if (h1 >= maxHum) {
         fanSpeed(PWM_FULL);
       } else if (h1 <= minHum) {
         stopFan();
@@ -491,7 +513,7 @@ void getMeasurements(){
 
     if (shouldReport) {
       reportMeasurement("fan", "speed", currentFanSpeed);
-      reportMeasurement("heater", "on", heating ? 1 : 0);
+      reportMeasurement("heater", "on", heaterIsHeating ? 1 : 0);
     }
 }
 
@@ -634,7 +656,7 @@ void fanSpeed(int speed)
 
 void heaterOn(bool shouldTurnOn)
 {
-  heating = shouldTurnOn;
+  heaterIsHeating = shouldTurnOn;
   
   if (shouldTurnOn) {
     Serial.println("Turning heater ON");
@@ -649,7 +671,7 @@ String heatColour() {
     if (!heatingIsActive) {
     return HEATING_INACTIVE_COLOUR;
   }
-  return heating ? HEATING_ON_COLOUR : HEATING_OFF_COLOUR ;
+  return heaterIsHeating ? HEATING_ON_COLOUR : HEATING_OFF_COLOUR ;
 }
 
 String fanColour() {
